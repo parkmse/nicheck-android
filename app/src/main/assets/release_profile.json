@@ -1,0 +1,31 @@
+{
+  "product": "NiCheck",
+  "version": "0.1.0",
+  "ui_language": "ko",
+  "firmware_family": "legacy_korean_text",
+  "wire_labels": [
+    "405",
+    "520",
+    "660"
+  ],
+  "physical_wavelengths_verified": false,
+  "formula": "C = (A660 - A520 - c) / m",
+  "final_model_available": false,
+  "m": null,
+  "c": null,
+  "reference_data_is_live_calibration": false,
+  "target_g_l": 5.2,
+  "reference_band_g_l": [
+    4.2,
+    6.2
+  ],
+  "band_is_product_pass_criterion": false,
+  "historical_csv_mixed_session": true,
+  "minimum_standard_levels": 3,
+  "minimum_replicates_per_level": 3,
+  "r2_screening": 0.995,
+  "r2_is_accuracy_validation": false,
+  "usb_serial_baud": 115200,
+  "v04_protocol2_compatible": false,
+  "new_install_requires_recalibration": true
+}

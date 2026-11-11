@@ -1,0 +1,22 @@
+*.iml
+.gradle/
+.kotlin/
+/local.properties
+/.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# 서명키와 비밀번호는 저장소에 올리지 않는다.
+*.jks
+*.keystore
+keystore.properties
+
+# 보드에서 읽어 둔 플래시 백업(4MB 바이너리)
+/board_backup/
+
+# 빌드 산출물
+*.apk
+*.aab

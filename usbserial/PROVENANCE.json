@@ -1,0 +1,6 @@
+{
+  "source": "https://github.com/mik3y/usb-serial-for-android",
+  "tag": "v3.10.0",
+  "archive_sha256": "d4567aa07ce3984d05b0c8689e44c0373254810a2338c951ac59364be8dd6960",
+  "modification": "Removed compile-time androidx.annotation imports/annotations only; runtime driver unchanged."
+}
