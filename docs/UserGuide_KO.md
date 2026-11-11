@@ -86,4 +86,5 @@
 ## 8. 관련 문서
 
 - 측정기와 주고받는 통신 형식: [FirmwareProtocol_KO.md](FirmwareProtocol_KO.md)
-- 빌드 방법, 확인한 범위, 개발 기록: [../README.md](../README.md)
+- 앱 소개, 빌드 방법, 확인한 범위: [../README.md](../README.md)
+- 날짜순 개발 기록: [DevLog_KO.md](DevLog_KO.md)
