@@ -18,6 +18,10 @@ public final class MeasurementCore {
     private static final Pattern ZERO = Pattern.compile("405 " + N + " / 520 " + N + " / 660 " + N);
     private static final Pattern GAIN = Pattern.compile("게인 " + N + "X");
     private static final Pattern CALC = Pattern.compile("계산 파장 (\\d+) nm( 단독)?");
+    /** 11/24 펌웨어부터의 표기: "계산 방식 405", "계산 방식 405+520", "계산 방식 405-520". ref 명령으로 고른다. */
+    private static final Pattern CALC_MODE = Pattern.compile("계산 방식 (\\d+)([+-]520)?");
+    /** "405+520" 방식에서 A520에 곱하는 값. 펌웨어의 안내문(405 + 0.76x520)과 11/23 검량선 기록의 점으로 확인했다. */
+    public static final double REF_PLUS = 0.76;
     private static final Pattern RESULT =
         Pattern.compile("농도 " + N + " g/L.*흡광도 405 " + N + " / 520 " + N + " / 660 " + N);
 
@@ -29,27 +33,29 @@ public final class MeasurementCore {
         public double[] i0;
         /** 농도 계산의 주 채널 번호(0 = 405, 2 = 660). 응답에서 읽지 못하면 -1. */
         public int primary = -1;
-        /** true면 주 채널 흡광도만 쓴다. false면 주 채널에서 520을 뺀다. */
+        /** true면 주 채널 흡광도만 쓴다. */
         public boolean single;
+        /** 주 채널 흡광도에 더하는 A520의 계수. 단독이면 0, "+520"이면 REF_PLUS, "-520"이면 -1. */
+        public double refK;
 
         public boolean calcKnown() { return primary == 0 || primary == 2; }
 
-        /** PC 프로그램의 검량선 기록 '계산' 칸과 같은 표기: "405" 또는 "660-520". */
+        /** PC 프로그램의 검량선 기록 '계산' 칸과 같은 표기: "405", "405+520", "405-520", "660-520". */
         public String calcId() {
             if (!calcKnown()) return "?";
-            return CHANNELS[primary] + (single ? "" : "-520");
+            return CHANNELS[primary] + (refK == 0 ? "" : refK > 0 ? "+520" : "-520");
         }
 
-        /** 화면에 보여 주는 계산식 왼쪽 항: "A405" 또는 "A660 − A520". */
+        /** 화면에 보여 주는 계산식 왼쪽 항: "A405", "A405 + 0.76×A520", "A405 − A520". */
         public String calcLabel() {
             if (!calcKnown()) return "미확인";
-            return "A" + CHANNELS[primary] + (single ? "" : " − A520");
+            return "A" + CHANNELS[primary] + (refK == 0 ? "" : refK > 0 ? " + " + plain(refK) + "×A520" : " − A520");
         }
 
         /** 검량식 A = m × C + c 의 A. 계산 방식을 모르면 NaN. */
         public double response(double[] absorbance) {
             if (!calcKnown() || absorbance == null || absorbance.length < 3) return Double.NaN;
-            return absorbance[primary] - (single ? 0 : absorbance[1]);
+            return absorbance[primary] + refK * absorbance[1];
         }
 
         /** 영점·게인·계산 방식 중 하나라도 바뀌면 달라진다. 검량식이 어느 조건에서 만들어졌는지 구분하는 데 쓴다. */
@@ -89,6 +95,13 @@ public final class MeasurementCore {
                 if (p.find()) {
                     s.primary = Arrays.asList(CHANNELS).indexOf(p.group(1));
                     s.single = p.group(2) != null;
+                    s.refK = s.single ? 0 : -1;
+                }
+                p = CALC_MODE.matcher(l);
+                if (p.find()) {
+                    s.primary = Arrays.asList(CHANNELS).indexOf(p.group(1));
+                    s.single = p.group(2) == null;
+                    s.refK = s.single ? 0 : p.group(2).startsWith("+") ? REF_PLUS : -1;
                 }
             }
         }
@@ -212,16 +225,33 @@ public final class MeasurementCore {
      * 범위를 모르면(PC 등 다른 곳에서 저장한 검량식) 농도는 그대로 두고 안내문만 붙인다.
      */
     public static Reading applyRange(Reading r, double[] range) {
+        return applyRange(r, range, RANGE_MARGIN);
+    }
+
+    /**
+     * margin은 범위 밖으로 봐주는 여유다. 앱에서 표준액으로 검량한 범위에는 RANGE_MARGIN을 쓰고,
+     * 관리 화면에서 직접 입력한 범위에는 0을 쓴다. 입력한 범위 밖의 정확도는 검증된 적이 없기 때문이다.
+     */
+    public static Reading applyRange(Reading r, double[] range, double margin) {
         if (r.accepted == null) return r;
         if (range == null) {
-            r.message += "\nPC에서 저장한 검량식이라 검량 범위를 모릅니다.";
+            r.message += "\nPC에서 저장한 검량식이라 검량 범위를 모릅니다. 관리 화면에서 검량 범위를 입력하세요.";
             return r;
         }
-        if (r.accepted < range[0] - RANGE_MARGIN || r.accepted > range[1] + RANGE_MARGIN)
-            return hold(r, "OUTSIDE_CALIBRATION_RANGE", String.format(Locale.US,
+        if (r.accepted < range[0] - margin || r.accepted > range[1] + margin)
+            return hold(r, "OUTSIDE_CALIBRATION_RANGE", margin > 0 ? String.format(Locale.US,
                 "검량 범위 밖입니다. 표준액 범위(%.2f~%.2f g/L)를 %.1f g/L 넘게 벗어났습니다. 적정으로 확인하세요.",
-                range[0], range[1], RANGE_MARGIN));
+                range[0], range[1], margin) : String.format(Locale.US,
+                "검량 범위(%.2f~%.2f g/L) 밖입니다. 적정으로 확인하세요.", range[0], range[1]));
         return r;
+    }
+
+    /** 관리 화면에서 입력한 검량 범위를 검사한다. 문제가 있으면 보여 줄 문구, 없으면 null. */
+    public static String checkRange(Double low, Double high) {
+        if (low == null || high == null) return "검량 범위의 하한과 상한을 모두 입력하세요.";
+        if (!Double.isFinite(low) || !Double.isFinite(high) || low < 0) return "검량 범위는 0 이상의 숫자로 입력하세요.";
+        if (low >= high) return "검량 범위의 하한은 상한보다 작아야 합니다.";
+        return null;
     }
 
     public static boolean finite(double[] v) {
@@ -303,6 +333,14 @@ public final class MeasurementCore {
         if (concentration == null || !Double.isFinite(concentration)) return "";
         if (absorbance != null && absorbance.length > 1 && Math.abs(absorbance[1]) > A520_LIMIT) return CHECK;
         return verdict(concentration, low, high);
+    }
+
+    public static final String RANGE_UNKNOWN = "검량 범위 모름";
+
+    /** 검량 범위를 모르면 "정상"이라고 하지 않는다. 그 농도에서 검량식이 맞는지 확인된 적이 없기 때문이다. 낮음·높음·확인 필요는 그대로 알린다. */
+    public static String verdict(Double concentration, Double low, Double high, double[] absorbance, boolean rangeKnown) {
+        String v = verdict(concentration, low, high, absorbance);
+        return v.equals(NORMAL) && !rangeKnown ? RANGE_UNKNOWN : v;
     }
 
     /**

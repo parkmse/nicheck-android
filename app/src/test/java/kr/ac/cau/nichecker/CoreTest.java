@@ -67,6 +67,23 @@ public class CoreTest {
         MeasurementCore.Status none = MeasurementCore.status(Arrays.asList("작업자: 없음 -> w 이름", "센서: OK", "증류수 기준: 없음 -> 증류수 넣고 z"));
         check(none.operator.isEmpty() && !none.zero && !none.calcKnown(), "작업자·영점·계산 방식 없음 인식");
 
+        // 0.9.0: 11/24 펌웨어는 상태를 "계산 방식 405", "405+520", "405-520"으로 보낸다. m·c는 11/23 검량선 기록의 값.
+        MeasurementCore.Status m405 = MeasurementCore.status(Arrays.asList("센서: OK", "증류수 기준: 405 7252 / 520 843 / 660 1305",
+            "검량선: m = 0.10820, c = -0.02647 (cal로 저장됨)", "설정: 게인 32X, 적분 50 ms, 6회 평균, 계산 방식 405, LED 예열 켜짐"));
+        check(m405.calcKnown() && m405.single && m405.calcId().equals("405") && m405.gain.equals("32") && m405.modelReady(), "새 표기의 405 단독 인식");
+        MeasurementCore.Status plus = MeasurementCore.status(Arrays.asList("센서: OK", "증류수 기준: 405 7252 / 520 843 / 660 1305",
+            "검량선: m = 0.10498, c = -0.00437 (cal로 저장됨)", "설정: 게인 32X, 적분 50 ms, 6회 평균, 계산 방식 405+520, LED 예열 켜짐"));
+        check(plus.calcKnown() && !plus.single && plus.calcId().equals("405+520") && plus.calcLabel().equals("A405 + 0.76×A520")
+            && Math.abs(plus.response(new double[]{.5778, .0159, .2352}) - (.5778 + .76 * .0159)) < 1e-12, "405+520은 A405 + 0.76×A520 사용");
+        MeasurementCore.Status minus = MeasurementCore.status(Arrays.asList("센서: OK", "설정: 게인 32X, 적분 50 ms, 6회 평균, 계산 방식 405-520, LED 예열 켜짐"));
+        check(minus.calcId().equals("405-520") && Math.abs(minus.response(new double[]{.5778, .0159, .2352}) - .5619) < 1e-12, "405-520은 A405 − A520 사용");
+        MeasurementCore.Reading rm = MeasurementCore.parse(Arrays.asList("농도 5.585 g/L (107%, OK)  흡광도 405 0.5778 / 520 0.0159 / 660 0.2352", "0\t1917\t813\t759"), m405, m405);
+        check(rm.accepted != null && rm.accepted == 5.585, "새 표기의 405 단독 측정값 수용");
+        rm = MeasurementCore.parse(Arrays.asList("농도 5.661 g/L (109%, OK)  흡광도 405 0.5778 / 520 0.0159 / 660 0.2352", "0\t1917\t813\t759"), plus, plus);
+        check(rm.accepted != null && rm.accepted == 5.661, "405+520 측정값 수용");
+        rm = MeasurementCore.parse(Arrays.asList("농도 5.585 g/L (107%, OK)  흡광도 405 0.5778 / 520 0.0159 / 660 0.2352", "0\t1917\t813\t759"), plus, plus);
+        check(rm.accepted == null && rm.code.equals("MODEL_MISMATCH"), "계산 방식과 안 맞는 농도는 보류");
+
         // 측정 해석: 받아들이는 경우
         MeasurementCore.Reading r = MeasurementCore.parse(good405(), s, s);
         check(r.accepted != null && r.accepted == 5.15 && r.code.equals("DEVICE_RESULT") && !r.check520, "405 단독 측정값 수용");
@@ -197,6 +214,29 @@ public class CoreTest {
         check(MeasurementCore.verdict(4.19, 4.2, 6.2).equals(MeasurementCore.LOW) && MeasurementCore.verdict(6.21, 4.2, 6.2).equals(MeasurementCore.HIGH), "범위 밖은 경고");
         check(MeasurementCore.verdict(3.0, 4.2, null).equals(MeasurementCore.LOW) && MeasurementCore.verdict(9.0, 4.2, null).equals(MeasurementCore.NORMAL)
             && MeasurementCore.verdict(9.0, null, 6.2).equals(MeasurementCore.HIGH), "하한 또는 상한만 설정");
+
+        // 0.8.0: 채움 평균으로 판정. 4.16 → 4.22, 하한 4.2이면 마지막 값은 정상이지만 평균 4.19는 낮음이다.
+        double[] mean = MeasurementCore.fillSummary(Arrays.asList(4.16, 4.22));
+        double[] clean = {.52, .0, .2};
+        check(MeasurementCore.verdict(4.22, 4.2, null, clean, true).equals(MeasurementCore.NORMAL)
+            && Math.abs(mean[0] - 4.19) < 1e-9 && MeasurementCore.verdict(mean[0], 4.2, null, clean, true).equals(MeasurementCore.LOW), "다시 채운 값은 평균으로 판정");
+
+        // 0.8.0: 검량 범위를 모르면 정상이라고 하지 않는다. 낮음·높음·확인 필요는 그대로 알린다.
+        check(MeasurementCore.verdict(9.0, 4.2, null, clean, false).equals(MeasurementCore.RANGE_UNKNOWN)
+            && MeasurementCore.verdict(5.2, 4.2, null, clean, false).equals(MeasurementCore.RANGE_UNKNOWN)
+            && MeasurementCore.verdict(5.2, 4.2, null, clean, true).equals(MeasurementCore.NORMAL), "검량 범위를 모르면 정상 대신 범위 모름");
+        check(MeasurementCore.verdict(3.0, 4.2, null, clean, false).equals(MeasurementCore.LOW)
+            && MeasurementCore.verdict(5.2, 4.2, null, new double[]{.52, .08, .2}, false).equals(MeasurementCore.CHECK)
+            && MeasurementCore.verdict(5.2, null, null, clean, false).isEmpty(), "범위를 몰라도 낮음·확인 필요는 그대로, 기준이 없으면 판정 안 함");
+
+        // 0.8.0: 관리 화면에서 입력한 검량 범위에는 여유 0.2를 주지 않는다. 5.15 g/L 측정값.
+        r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{4.0, 6.5}, 0);
+        check(r.accepted != null && r.accepted == 5.15, "입력한 검량 범위 안은 표시");
+        r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{5.2, 6.5}, 0);
+        check(r.accepted == null && r.code.equals("OUTSIDE_CALIBRATION_RANGE") && r.message.contains("5.20~6.50") && !r.message.contains("0.2"),
+            "입력한 검량 범위는 조금만 벗어나도 보류");
+        check(MeasurementCore.checkRange(4.0, 6.5) == null && MeasurementCore.checkRange(null, 6.5) != null
+            && MeasurementCore.checkRange(6.5, 4.0) != null && MeasurementCore.checkRange(-1.0, 6.5) != null, "검량 범위 입력 검사");
 
         // 기준값 설정 검사
         check(MeasurementCore.checkLimits(5.2, null, null) == null && MeasurementCore.checkLimits(5.2, 4.2, 6.2) == null, "올바른 기준값 통과");

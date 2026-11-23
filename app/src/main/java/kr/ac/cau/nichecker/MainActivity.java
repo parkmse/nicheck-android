@@ -35,6 +35,10 @@ public class MainActivity extends Activity {
     final ArrayList<Double> fills=new ArrayList<>();
     /** 이번 연결에서 영점을 잰 시각(System.currentTimeMillis). 재지 않았으면 -1. shortcut: 측정기의 버튼으로 잰 영점은 알지 못해 안내가 한 번 더 뜰 수 있다, 펌웨어가 영점 시각을 알려 주면 그 값을 쓴다. */
     long zeroAt=-1;
+    /** 지금 채움 비교 중인 시료를 처음 쟀을 때의 이름·시료 정보·기준 농도. 다시 채워 잴 때 이 값을 기록에 쓴다. */
+    String fillName="",fillRef="";LinkedHashMap<String,String> fillInfo=new LinkedHashMap<>();
+    /** 마지막으로 잰 표준액의 이름과 농도. 이름만 바뀌고 표준액 체크가 남아 있을 때 한 번 묻는 데 쓴다. */
+    String lastStdName="",lastStdRef="";
     android.content.SharedPreferences prefs;
     /** 앱 안에서 보는 사용 방법. 처음 쓰는 작업자도 순서대로 따라 하면 잴 수 있게 짧게 적는다. */
     static final String GUIDE="1. 연결\n측정기를 USB 케이블로 휴대폰에 꽂고 \"USB 장비 연결\"을 누릅니다.\n\n2. 영점\n증류수 큐벳을 넣고 뚜껑을 닫은 뒤 \"증류수 영점 측정\"을 누릅니다.\n\n3. 측정\n시료 큐벳으로 바꾸고 \"측정하고 자동 저장\"을 누릅니다.\n\n4. 다시 채워 측정\n같은 시료를 다시 채워 한 번 더 재면 평균이 나옵니다.\n\n알아 둘 것\n· 잴 때마다 \"용기를 고정하고 외부 빛을 가렸습니다.\"에 체크합니다.\n· \"확인 필요\"가 뜨면 다시 채워서 재고, 그래도 같으면 적정으로 확인합니다.\n· 영점은 5분이 지나면 다시 잡습니다.\n· 기록은 기록 탭에서 보고 CSV 파일로 내보냅니다.";
@@ -153,9 +157,10 @@ public class MainActivity extends Activity {
     void recordsPage(){
         LinearLayout c=card(body,"측정 기록");add(c,text("실제 USB 측정 기록 "+records.size()+"건 · 앱 내부에 자동 보관",14,MUTED,false));button(c,"CSV 파일로 내보내기",true,this::export);
         if(records.isEmpty()){c=card(body,"");add(c,text("아직 측정 기록이 없습니다.",16,MUTED,false));return;}
-        for(int j=records.size()-1;j>=Math.max(0,records.size()-40);j--){JSONObject r=records.get(j);c=card(body,"");LinearLayout rowTop=new LinearLayout(this);rowTop.setGravity(Gravity.CENTER_VERTICAL);rowTop.addView(text(r.optString("name","시료"),15,INK,true),new LinearLayout.LayoutParams(0,-2,1));String value=r.isNull("concentration")?"농도 보류":String.format(Locale.US,"%.2f g/L",r.optDouble("concentration"));if(!r.isNull("concentration")&&!r.isNull("percent_of_target"))value+=String.format(Locale.US," · %.1f%%",r.optDouble("percent_of_target"));rowTop.addView(text(value,17,r.isNull("concentration")?MUTED:BLUE,true));add(c,rowTop);
+        for(int j=records.size()-1;j>=Math.max(0,records.size()-40);j--){JSONObject r=records.get(j);c=card(body,"");LinearLayout rowTop=new LinearLayout(this);rowTop.setGravity(Gravity.CENTER_VERTICAL);rowTop.addView(text(r.optString("name","시료"),15,INK,true),new LinearLayout.LayoutParams(0,-2,1));// 다시 채워 잰 기록은 평균이 최종값이라 평균을 크게 보여 준다. %와 판정도 평균 기준이다(0.8.0부터).
+            boolean filled=!r.isNull("concentration")&&!r.isNull("fill_mean_g_l");String value=r.isNull("concentration")?"농도 보류":String.format(Locale.US,"%.2f g/L",filled?r.optDouble("fill_mean_g_l"):r.optDouble("concentration"));if(!r.isNull("concentration")&&!r.isNull("percent_of_target"))value+=String.format(Locale.US," · %.1f%%",r.optDouble("percent_of_target"));rowTop.addView(text(value,17,r.isNull("concentration")?MUTED:BLUE,true));add(c,rowTop);
             if(!cell(r,"verdict").isEmpty())add(c,text("판정: "+cell(r,"verdict"),13,cell(r,"verdict").equals(MeasurementCore.NORMAL)?BLUE:RED,true));
-            if(!cell(r,"fill_mean_g_l").isEmpty())add(c,text("채움 "+cell(r,"fill_count")+"회 평균 "+cell(r,"fill_mean_g_l")+" g/L · 차이 "+cell(r,"fill_diff_g_l")+" g/L",13,INK,false));
+            if(filled)add(c,text("채움 "+cell(r,"fill_count")+"회 평균 · 이번 채움 "+cell(r,"concentration")+" g/L · 차이 "+cell(r,"fill_diff_g_l")+" g/L",13,INK,false));
             add(c,text(r.optString("time")+" · "+r.optString("operator"),12,MUTED,false));
             ArrayList<String> where=new ArrayList<>();if(!cell(r,"sample_id").isEmpty())where.add("시료 "+cell(r,"sample_id"));for(String k:new String[]{"plant","line","tank"})if(!cell(r,k).isEmpty())where.add(cell(r,k));if(!cell(r,"sample_temp_c").isEmpty())where.add(cell(r,"sample_temp_c")+" ℃");if(!cell(r,"mto").isEmpty())where.add("MTO "+cell(r,"mto"));if(!cell(r,"sampled_at").isEmpty())where.add("채취 "+cell(r,"sampled_at"));if(!cell(r,"reference_g_l").isEmpty())where.add((r.optBoolean("standard")?"표준액 ":"적정 ")+cell(r,"reference_g_l")+" g/L");
             if(!where.isEmpty())add(c,text(String.join(" · ",where),12,MUTED,false));
@@ -166,6 +171,10 @@ public class MainActivity extends Activity {
         LinearLayout c=card(body,"장비 상태");add(c,text("맞는 펌웨어: nickel_rig\n405·520·660은 LED를 구분하는 이름이고, 실제 파장과 다를 수 있습니다.",13,MUTED,false));
         add(c,text("센서: "+(status.sensor?"응답 확인":"미확인")+"\nLCD: "+status.lcd+"\n게인: "+status.gain+"X\n농도 계산: "+status.calcLabel()+"\n영점: "+(status.zero?Arrays.toString(status.i0):"없음")+"\n검량식: "+(status.modelReady()?String.format(Locale.US,"m=%.6f, c=%.6f",status.m,status.c)+"\n"+calibrationNote(status):"없음 또는 기본 추정치"),14,INK,false));
         button(c,"장비 상태 새로고침",false,()->run("장비 상태 확인 중",()->instrument.status(),x->{status=(MeasurementCore.Status)x;render();})).setEnabled(!busy&&instrument!=null);
+        // PC에서 저장한 검량식은 어떤 농도의 표준액으로 만들었는지 측정기가 알려 주지 않는다. 여기서 입력받아 m·c와 함께 적어 둔다.
+        if(instrument!=null&&status.modelReady()){double[] rg=calibrationRange(status);c=card(body,"검량 범위");add(c,text("검량식을 만들 때 쓴 표준액의 가장 낮은 농도와 높은 농도입니다. 이 범위 밖의 값은 보류합니다. 범위를 모르면 \"정상\" 판정을 하지 않습니다.",13,MUTED,false));gap(c,8);
+            final EditText rlo=entry(c,"검량 범위 하한 g/L",rg==null?"":MeasurementCore.plain(rg[0]),true),rhi=entry(c,"검량 범위 상한 g/L",rg==null?"":MeasurementCore.plain(rg[1]),true);
+            button(c,"검량 범위 저장",false,()->saveRange(rlo.getText().toString(),rhi.getText().toString()));}
         c=card(body,"기준값 설정");add(c,text("기준 농도가 100%입니다. 하한 4.2는 회사가 작업을 멈추는 농도입니다. 하한과 상한을 비우면 판정하지 않습니다.",13,MUTED,false));gap(c,8);
         final EditText targetIn=entry(c,"기준 농도 g/L (100%)",MeasurementCore.plain(target),true),lowIn=entry(c,"범위 하한 g/L · 미정이면 비움",limitLow==null?"":MeasurementCore.plain(limitLow),true),highIn=entry(c,"범위 상한 g/L · 미정이면 비움",limitHigh==null?"":MeasurementCore.plain(limitHigh),true);
         button(c,"기준값 저장",false,()->saveLimits(targetIn.getText().toString(),lowIn.getText().toString(),highIn.getText().toString()));
@@ -199,34 +208,46 @@ public class MainActivity extends Activity {
     /** refill = 방금 잰 시료를 다시 채워 한 번 더 재는 측정. 앞의 값과 평균·차이를 낸다. */
     void measure(boolean refill){
         if(!ready())return;if(operatorText.isEmpty()||sampleText.isEmpty()){info("입력 확인","작업자와 측정 이름을 입력하세요.");render();return;}
-        final Double cref;try{cref=refText.isEmpty()?null:Double.valueOf(refText);if(cref!=null&&(!Double.isFinite(cref)||cref<0))throw new NumberFormatException();if(standardValue&&(cref==null||cref<=0))throw new NumberFormatException();}catch(Exception e){info("기준 농도","표준액은 농도를 숫자로 적어야 합니다. 일반 시료는 모르면 비워 두세요.");render();return;}
-        final String name=sampleText,op=operatorText;final boolean standard=standardValue,again=refill&&!standard;
-        final Double temp,mto;try{temp=MeasurementCore.optionalNumber(sampleInfo.get("sample_temp_c"));mto=MeasurementCore.optionalNumber(sampleInfo.get("mto"));if(mto!=null&&mto<0)throw new NumberFormatException();}catch(NumberFormatException e){info("시료 정보","시료 온도와 MTO는 숫자로 입력하세요. 모르면 비워 둡니다.");render();return;}
-        final String sampled;try{sampled=MeasurementCore.sampledAt(sampleInfo.get("sampled_at"),java.time.LocalDateTime.now());}catch(IllegalArgumentException e){info("채취 시각","채취 시각은 14:05 또는 2026-11-12 14:05 형식으로 입력하세요. 모르면 비워 둡니다.");render();return;}
-        sampleInfo.put("sampled_at",sampled);final LinkedHashMap<String,String> meta=new LinkedHashMap<>(sampleInfo);final double tgt=target;final Double lo=limitLow,hi=limitHigh;
+        final String name=sampleText,op=operatorText;final boolean standard=standardValue,again=refill&&!standard&&!fills.isEmpty();
+        // 다시 채워 재는 측정은 그 시료를 처음 쟀을 때의 시료 정보를 쓴다. 이름이나 시료 ID가 달라졌으면 다른 시료이므로 평균에 섞지 않는다.
+        if(again&&(!name.equals(fillName)||(!sampleInfo.get("sample_id").isEmpty()&&!sampleInfo.get("sample_id").equals(fillInfo.get("sample_id"))))){info("다시 채워 측정","측정 이름이나 시료 ID가 앞 측정과 다릅니다. 다른 시료는 \"측정하고 자동 저장\"으로 재세요.");render();return;}
+        final LinkedHashMap<String,String> src=again?fillInfo:sampleInfo;final String ref=again?fillRef:refText;
+        final Double cref;try{cref=ref.isEmpty()?null:Double.valueOf(ref);if(cref!=null&&(!Double.isFinite(cref)||cref<0))throw new NumberFormatException();if(standard&&(cref==null||cref<=0))throw new NumberFormatException();}catch(Exception e){info("기준 농도","표준액은 농도를 숫자로 적어야 합니다. 일반 시료는 모르면 비워 두세요.");render();return;}
+        final Double temp,mto;try{temp=MeasurementCore.optionalNumber(src.get("sample_temp_c"));mto=MeasurementCore.optionalNumber(src.get("mto"));if(mto!=null&&mto<0)throw new NumberFormatException();}catch(NumberFormatException e){info("시료 정보","시료 온도와 MTO는 숫자로 입력하세요. 모르면 비워 둡니다.");render();return;}
+        final String sampled;try{sampled=MeasurementCore.sampledAt(src.get("sampled_at"),java.time.LocalDateTime.now());}catch(IllegalArgumentException e){info("채취 시각","채취 시각은 14:05 또는 2026-11-12 14:05 형식으로 입력하세요. 모르면 비워 둡니다.");render();return;}
+        final LinkedHashMap<String,String> meta=new LinkedHashMap<>(src);meta.put("sampled_at",sampled);final double tgt=target;final Double lo=limitLow,hi=limitHigh;
         final Runnable go=()->run("시료 측정 중 · 위치를 유지하세요",()->{MeasurementCore.Status before=instrument.status();List<String> lines=instrument.ask("","0\t","SENSOR");MeasurementCore.Status after=instrument.status();return new Object[]{before,after,MeasurementCore.parse(lines,before,after)};},x->{Object[] p=(Object[])x;MeasurementCore.Status before=(MeasurementCore.Status)p[0];status=(MeasurementCore.Status)p[1];MeasurementCore.Reading r=(MeasurementCore.Reading)p[2];
             // 기기에 저장된 검량식은 누가 저장했든 그대로 쓴다. 이 휴대폰에서 저장한 식이면 그때의 표준액 농도 범위를 알기 때문에 범위 밖 농도를 보류한다.
-            final double[] range=calibrationRange(before);MeasurementCore.applyRange(r,range);
+            // 화면의 입력 칸은 측정 전 값이다. 아래에서 비운 값이 다시 읽혀 되살아나지 않게 여기서 버린다.
+            operator=null;infoInputs.clear();
+            final double[] range=calibrationRange(before);MeasurementCore.applyRange(r,range,rangeMargin());
             if(standard&&r.signal!=null&&r.absorbance!=null&&MeasurementCore.positive(r.signal)&&MeasurementCore.finite(r.absorbance)&&(r.code.equals("NO_MODEL")||r.code.equals("DEVICE_RESULT")||r.code.equals("OUTSIDE_CALIBRATION_RANGE"))){if(!standardEpoch.equals(before.fingerprint())){standards.clear();standardEpoch=before.fingerprint();}standards.add(new MeasurementCore.Point(cref,before.response(r.absorbance)));}
             // 채움 비교: 새 시료면 비우고 시작한다. 보류된 측정은 넣지 않는다. 채울 때마다 기포·부유물이 달라져서 두 번 잰 평균을 최종값으로 쓴다.
             if(!again)fills.clear();if(!standard&&r.accepted!=null)fills.add(r.accepted);
             final double[] fill=!standard&&r.accepted!=null&&fills.size()>1?MeasurementCore.fillSummary(fills):null;final int fillCount=fills.size();
             if(fill!=null)r.message+=fill[1]>MeasurementCore.FILL_DIFF_LIMIT?String.format(Locale.US,"\n채움 간 차이가 %.1f g/L을 넘습니다. 한 번 더 채워 재세요.",MeasurementCore.FILL_DIFF_LIMIT):"\n채움 "+fillCount+"회의 평균을 최종값으로 씁니다.";
-            latest=r.accepted;latestCode=r.accepted==null?"농도 결과 보류":"측정기가 계산한 값입니다.";lastMessage=r.message;
-            // 기준 대비 %와 판정은 받아들인 농도에만 붙인다. 표준액은 일부러 범위 밖으로 만든 액이라 판정하지 않는다.
-            final Double pct=r.accepted==null?null:Math.round(MeasurementCore.percent(r.accepted,tgt)*100)/100.0;final String verdict=standard?"":MeasurementCore.verdict(r.accepted,lo,hi,r.absorbance);
+            // 두 번 이상 채워 쟀으면 평균이 최종값이다. 화면의 숫자·%·눈금·판정과 기록의 %·판정을 평균으로 낸다. 기록의 농도는 그 회차 값 그대로 둔다.
+            final Double shown=fill!=null?Double.valueOf(fill[0]):r.accepted;
+            latest=shown;latestCode=r.accepted==null?"농도 결과 보류":fill!=null?"채움 "+fillCount+"회의 평균입니다.":"측정기가 계산한 값입니다.";lastMessage=r.message;
+            // 기준 대비 %와 판정은 받아들인 농도에만 붙인다. 표준액은 일부러 범위 밖으로 만든 액이라 판정하지 않는다. 검량 범위를 모르면 정상이라고 하지 않는다.
+            final Double pct=shown==null?null:Math.round(MeasurementCore.percent(shown,tgt)*100)/100.0;final String verdict=standard?"":MeasurementCore.verdict(shown,lo,hi,r.absorbance,range!=null);
             latestVerdict=verdict;
             latestDetail=pct==null?"":String.format(Locale.US,"기준 대비 %.1f%% · 기준 %s g/L",pct,MeasurementCore.plain(tgt))
-                +(fill==null?"":String.format(Locale.US,"\n채움 %d회 평균 %.2f g/L · 차이 %.2f g/L",fillCount,fill[0],fill[1]));
+                +(fill==null?"":String.format(Locale.US,"\n이번 채움 %.2f g/L · 채움 간 차이 %.2f g/L",r.accepted,fill[1]));
             try{JSONObject record=new JSONObject();record.put("time",new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(new Date()));record.put("operator",op);record.put("name",name);record.put("standard",standard);record.put("reference_g_l",cref==null?JSONObject.NULL:cref);
                 for(String k:new String[]{"sample_id","plant","line","tank","sampled_at"})record.put(k,meta.get(k));record.put("sample_temp_c",temp==null?JSONObject.NULL:temp);record.put("mto",mto==null?JSONObject.NULL:mto);
                 record.put("target_g_l",tgt);record.put("percent_of_target",pct==null?JSONObject.NULL:pct);record.put("verdict",verdict);record.put("limit_low_g_l",lo==null?JSONObject.NULL:lo);record.put("limit_high_g_l",hi==null?JSONObject.NULL:hi);
                 record.put("fill_count",fill==null?JSONObject.NULL:fillCount);record.put("fill_mean_g_l",fill==null?JSONObject.NULL:Math.round(fill[0]*1000)/1000.0);record.put("fill_diff_g_l",fill==null?JSONObject.NULL:Math.round(fill[1]*1000)/1000.0);
                 record.put("signal",arr(r.signal));record.put("absorbance",arr(r.absorbance));record.put("concentration",r.accepted==null?JSONObject.NULL:r.accepted);record.put("device_reported",r.reported==null?JSONObject.NULL:r.reported);record.put("status",r.code);record.put("message",r.message);record.put("raw",new JSONArray(r.raw));record.put("settings",statusJSON(before).put("cal_range_g_l",range==null?JSONObject.NULL:arr(range)));records.add(record);append(record);lastMessage+="\n기록이 저장되었습니다.";}catch(Exception e){lastMessage+="\n저장 실패: "+e.getMessage();info("저장 확인",lastMessage);}
+            // 농도가 나온 일반 시료는 시료별 정보를 비운다. 다음 시료 기록에 앞 시료의 ID·온도·MTO·채취 시각·기준 농도가 붙지 않게 한다. 다시 채워 잴 때는 fillInfo에 남긴 값을 쓴다.
+            // 표준액은 같은 농도를 여러 번 재므로 그대로 둔다. 보류된 측정도 다시 잴 수 있게 그대로 둔다.
+            if(!standard&&r.accepted!=null){if(!again){fillName=name;fillInfo=meta;fillRef=ref;}for(String k:new String[]{"sample_id","sample_temp_c","mto","sampled_at"})sampleInfo.put(k,"");refText="";}
+            if(standard){lastStdName=name;lastStdRef=ref;}
             preparedValue=false;render();});
         // 영점이 오래됐으면 재기 전에 묻는다. 영점이 아예 없으면 묻지 않는다. 그 측정은 "영점이 없습니다"로 보류된다.
-        final String stale=status.zero?MeasurementCore.zeroWarning(zeroAt,System.currentTimeMillis()):null;
-        if(stale==null)go.run();else confirm("영점 확인",stale+"\n\n그대로 측정할까요?",go);
+        final Runnable start=()->{final String stale=status.zero?MeasurementCore.zeroWarning(zeroAt,System.currentTimeMillis()):null;if(stale==null)go.run();else confirm("영점 확인",stale+"\n\n그대로 측정할까요?",go);};
+        // 표준액 체크와 농도는 반복 측정을 위해 남겨 둔다. 이름만 바뀌고 그 둘이 그대로면 일반 시료가 검량 데이터에 섞일 수 있어 한 번 묻는다.
+        if(standard&&!lastStdName.isEmpty()&&!name.equals(lastStdName)&&ref.equals(lastStdRef))confirm("표준액 확인","측정 이름은 바뀌었는데 표준액 체크와 농도("+ref+" g/L)가 앞 측정 그대로입니다.\n\n이 측정도 검량용 표준액으로 기록할까요?",start);else start.run();
     }
     void saveLimits(String t,String lo,String hi){
         final Double nt,nlo,nhi;try{nt=MeasurementCore.optionalNumber(t);nlo=MeasurementCore.optionalNumber(lo);nhi=MeasurementCore.optionalNumber(hi);}catch(NumberFormatException e){info("기준값 설정","숫자로 입력하세요. 예: 5.2");return;}
@@ -256,14 +277,26 @@ public class MainActivity extends Activity {
     String calibrationNote(MeasurementCore.Status s){
         if(!s.modelReady())return "검량식 없음 · 표준액으로 검량 필요";
         double[] r=calibrationRange(s);
-        return r==null?"PC에서 저장한 검량식 · 검량 범위 모름":String.format(Locale.US,"이 휴대폰에서 저장한 검량식 · 검량 범위 %.2f~%.2f g/L",r[0],r[1]);
+        if(r==null)return "PC에서 저장한 검량식 · 검량 범위 모름 (관리 화면에서 입력)";
+        return String.format(Locale.US,prefs.getBoolean("model_entered",false)?"PC에서 저장한 검량식 · 입력한 검량 범위 %.2f~%.2f g/L":"이 휴대폰에서 저장한 검량식 · 검량 범위 %.2f~%.2f g/L",r[0],r[1]);
+    }
+    /** 범위 밖으로 봐주는 여유. 직접 입력한 범위는 그 밖의 정확도가 검증되지 않아 여유를 주지 않는다. */
+    double rangeMargin(){return prefs.getBoolean("model_entered",false)?0:MeasurementCore.RANGE_MARGIN;}
+    /** PC에서 저장한 검량식의 검량 범위를 지금 측정기의 m·c와 묶어 적어 둔다. m·c가 바뀌면 calibrationRange가 null을 주므로 이 범위는 저절로 무효가 된다. */
+    void saveRange(String lo,String hi){
+        if(instrument==null||!status.modelReady()||!status.calcKnown()){info("검량 범위","측정기를 연결하고 검량식이 있는지 확인하세요.");return;}
+        final Double nlo,nhi;try{nlo=MeasurementCore.optionalNumber(lo);nhi=MeasurementCore.optionalNumber(hi);}catch(NumberFormatException e){info("검량 범위","숫자로 입력하세요. 예: 4.0");return;}
+        String problem=MeasurementCore.checkRange(nlo,nhi);if(problem!=null){info("검량 범위",problem);return;}
+        prefs.edit().putString("model_calc",status.calcId()).putString("model_m",Double.toString(status.m)).putString("model_c",Double.toString(status.c))
+          .putString("model_min",Double.toString(nlo)).putString("model_max",Double.toString(nhi)).putBoolean("model_entered",true).apply();
+        render();info("검량 범위",String.format(Locale.US,"저장했습니다. %s~%s g/L 밖의 값은 보류합니다.\n측정기의 검량식(m, c)이 바뀌면 다시 입력해야 합니다.",MeasurementCore.plain(nlo),MeasurementCore.plain(nhi)));
     }
     /** 방금 기기에 저장한 검량식과 그 표준액 농도 범위를 휴대폰에 적어 둔다. */
     void rememberCalibration(MeasurementCore.Fit f){
         prefs.edit().putString("model_calc",status.calcId())
           .putString("model_m",Double.toString(status.m)).putString("model_c",Double.toString(status.c))
           .putString("model_min",Double.toString(f.min)).putString("model_max",Double.toString(f.max))
-          .remove("invalidated").remove("model_fingerprint").apply();
+          .remove("invalidated").remove("model_fingerprint").remove("model_entered").apply();
     }
     void confirm(String title,String msg,Runnable yes){new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setNegativeButton("취소",null).setPositiveButton("확인",(d,w)->yes.run()).show();}
     void info(String title,String msg){if(!destroyed)new AlertDialog.Builder(this).setTitle(title).setMessage(msg).setPositiveButton("확인",null).show();}

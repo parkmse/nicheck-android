@@ -22,8 +22,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // 새 APK를 배포할 때마다 versionCode를 1씩 올린다. 올리지 않으면 덮어 설치되지 않는다.
-        versionCode = 8
-        versionName = "0.7.0"
+        versionCode = 10
+        versionName = "0.9.0"
     }
 
     signingConfigs {
