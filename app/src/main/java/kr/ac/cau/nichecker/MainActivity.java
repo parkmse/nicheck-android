@@ -29,13 +29,15 @@ public class MainActivity extends Activity {
     LinearLayout root,body,tabs;TextView connectionText,nextText,resultText,resultNote,modelNote,recordNote;
     EditText operator,sample,reference;CheckBox prepared,isStandard;Button connectButton,measureButton;ScrollView scroll;
     UsbManager usb;UsbInstrument instrument;MeasurementCore.Status status=new MeasurementCore.Status();
-    boolean busy=false,destroyed=false;int tab=0,generation=0;String taskNote="",lastMessage="장비를 연결하면 다음 할 일을 안내합니다.",sampleText="샘플1",operatorText="",refText="";
+    boolean busy=false,destroyed=false;int tab=0,generation=0;String taskNote="",lastMessage="",sampleText="샘플1",operatorText="",refText="";
     boolean preparedValue=false,standardValue=false;Double latest=null;String latestCode="",standardEpoch="";
     /** 지금 재고 있는 시료를 채울 때마다 얻은 농도. "같은 시료 다시 채워 측정"으로 이어 잴 때만 쌓인다. */
     final ArrayList<Double> fills=new ArrayList<>();
     /** 이번 연결에서 영점을 잰 시각(System.currentTimeMillis). 재지 않았으면 -1. shortcut: 측정기의 버튼으로 잰 영점은 알지 못해 안내가 한 번 더 뜰 수 있다, 펌웨어가 영점 시각을 알려 주면 그 값을 쓴다. */
     long zeroAt=-1;
     android.content.SharedPreferences prefs;
+    /** 앱 안에서 보는 사용 방법. 처음 쓰는 작업자도 순서대로 따라 하면 잴 수 있게 짧게 적는다. */
+    static final String GUIDE="1. 연결\n측정기를 USB 케이블로 휴대폰에 꽂고 \"USB 장비 연결\"을 누릅니다.\n\n2. 영점\n증류수 큐벳을 넣고 뚜껑을 닫은 뒤 \"증류수 영점 측정\"을 누릅니다.\n\n3. 측정\n시료 큐벳으로 바꾸고 \"측정하고 자동 저장\"을 누릅니다.\n\n4. 다시 채워 측정\n같은 시료를 다시 채워 한 번 더 재면 평균이 나옵니다.\n\n알아 둘 것\n· 잴 때마다 \"용기를 고정하고 외부 빛을 가렸습니다.\"에 체크합니다.\n· \"확인 필요\"가 뜨면 다시 채워서 재고, 그래도 같으면 적정으로 확인합니다.\n· 영점은 5분이 지나면 다시 잡습니다.\n· 기록은 기록 탭에서 보고 CSV 파일로 내보냅니다.";
     /** 시료 정보 칸: {기록에 쓰는 이름, 화면 이름}. 모두 선택 입력이다. */
     static final String[][] INFO={{"sample_id","시료 ID"},{"plant","공장"},{"line","라인"},{"tank","도금조"},{"sample_temp_c","시료 온도 ℃"},{"mto","MTO"},{"sampled_at","채취 시각 · 예: 14:05 또는 2026-11-12 14:05"}};
     final LinkedHashMap<String,String> sampleInfo=new LinkedHashMap<>();final HashMap<String,EditText> infoInputs=new HashMap<>();boolean infoOpen=false;
@@ -88,8 +90,8 @@ public class MainActivity extends Activity {
         add(root,header);View accent=new View(this);accent.setBackgroundColor(RED);root.addView(accent,new LinearLayout.LayoutParams(-1,dp(3)));if(tab==0)add(root,steps());
         scroll=new ScrollView(this);scroll.setFillViewport(true);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));body=new LinearLayout(this);body.setOrientation(1);body.setPadding(dp(18),dp(18),dp(18),dp(18));scroll.addView(body);
         if(tab==0)measurementPage();else if(tab==1)recordsPage();else adminPage();
-        // 측정 버튼은 화면을 내려도 항상 탭 바로 위에 붙어 있다. 측정기 앱들이 주 동작을 손 닿는 곳에 고정해 두는 방식을 따랐다.
-        if(tab==0){LinearLayout bar=new LinearLayout(this);bar.setOrientation(1);bar.setPadding(dp(18),0,dp(18),dp(10));bar.setBackgroundColor(BG);measureButton=button(bar,"측정하고 자동 저장",true,()->measure(false));measureButton.setEnabled(!busy&&instrument!=null);measureButton.setAlpha(measureButton.isEnabled()?1f:.35f);add(root,bar);}
+        // 측정 버튼은 화면을 내려도 항상 탭 바로 위에 붙어 있다. 측정기 앱들이 주 동작을 손 닿는 곳에 고정해 두는 방식을 따랐다. 연결된 뒤에만 나온다.
+        if(tab==0&&instrument!=null){LinearLayout bar=new LinearLayout(this);bar.setOrientation(1);bar.setPadding(dp(18),0,dp(18),dp(10));bar.setBackgroundColor(BG);measureButton=button(bar,"측정하고 자동 저장",true,()->measure(false));measureButton.setAlpha(busy?.35f:1f);add(root,bar);}
         tabs=new LinearLayout(this);tabs.setBackgroundColor(Color.WHITE);String[] labels={"측정","기록","관리"};
         for(int n=0;n<3;n++){final int index=n;LinearLayout col=new LinearLayout(this);col.setOrientation(1);View bar=new View(this);bar.setBackgroundColor(n==tab?BLUE:LINE);col.addView(bar,new LinearLayout.LayoutParams(-1,dp(n==tab?3:1)));
             Button b=new Button(this);b.setAllCaps(false);b.setText(labels[n]);b.setTextSize(15);b.setMinHeight(dp(52));b.setTextColor(n==tab?BLUE:MUTED);if(n==tab)b.setTypeface(Typeface.DEFAULT,Typeface.BOLD);b.setBackgroundColor(Color.WHITE);b.setStateListAnimator(null);col.addView(b,new LinearLayout.LayoutParams(-1,-2));
@@ -116,9 +118,9 @@ public class MainActivity extends Activity {
             p.setColor(Color.WHITE);c.drawCircle(x(value),y,dp(9),p);p.setColor(ok?BLUE:RED);c.drawCircle(x(value),y,dp(7),p);}
     }
     void measurementPage(){
-        // 연결 전에만 연결 카드를 보여 준다. 연결된 뒤에는 측정값이 맨 위에 오고, 연결 상태는 제목 띠에 나온다.
-        LinearLayout c;if(instrument==null){c=card(body,"");add(c,text("측정기를 USB로 꽂은 뒤 연결하세요.",14,MUTED,false));connectButton=button(c,"USB 장비 연결",true,()->{rememberInputs();connect();});}
-        c=card(body,"");LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);top.addView(text("최근 측정",13,MUTED,false),new LinearLayout.LayoutParams(0,-2,1));
+        // 연결 전에는 시작 화면만 보여 준다. 측정 화면은 연결된 뒤에 열리고, 연결 상태는 제목 띠에 나온다.
+        if(instrument==null){startPage();return;}
+        LinearLayout c=card(body,"");LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);top.addView(text("최근 측정",13,MUTED,false),new LinearLayout.LayoutParams(0,-2,1));
         final boolean ok=latestVerdict.isEmpty()||latestVerdict.equals(MeasurementCore.NORMAL);
         if(latest!=null&&!latestVerdict.isEmpty()){TextView chip=text(latestVerdict,12,Color.WHITE,true);chip.setPadding(dp(12),dp(3),dp(12),dp(3));chip.setBackground(shape(ok?BLUE:RED,0));top.addView(chip);}add(c,top);
         LinearLayout num=new LinearLayout(this);resultText=text(latest==null?"--":String.format(Locale.US,"%.2f",latest),46,latest==null?MUTED:BLUE,true);num.addView(resultText);num.addView(text("  g/L",16,MUTED,false));add(c,num);
@@ -134,8 +136,19 @@ public class MainActivity extends Activity {
         Button again=button(row,"같은 시료 다시 채워 측정",false,()->measure(true)),zeroButton=button(row,"증류수 영점 측정",false,this::zero);again.setEnabled(!busy&&instrument!=null&&!fills.isEmpty());zeroButton.setEnabled(!busy&&instrument!=null);
         for(Button b:new Button[]{again,zeroButton}){b.setTextSize(14);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-1,1);lp.topMargin=dp(8);if(b==zeroButton)lp.leftMargin=dp(8);b.setLayoutParams(lp);}
         c=card(body,"측정기 상태");add(c,text("아직 검증 중인 시제품입니다. 중요한 판단은 적정으로 확인하세요.",13,MUTED,false));
-        modelNote=text(instrument==null?"측정기를 연결하면 영점과 검량식 상태가 여기에 나옵니다.":(!status.zero?"영점 없음 · 증류수 영점 필요":zeroAt<0?"영점 있음 · 언제 잰 것인지 모름":"영점 있음 · "+new SimpleDateFormat("HH:mm",Locale.US).format(new Date(zeroAt))+"에 잼")+"\n"+calibrationNote(status),13,BLUE,true);add(c,modelNote);
-        if(instrument!=null)button(c,"연결 끊기",false,()->{rememberInputs();disconnect("연결을 종료했습니다.");});
+        modelNote=text((!status.zero?"영점 없음 · 증류수 영점 필요":zeroAt<0?"영점 있음 · 언제 잰 것인지 모름":"영점 있음 · "+new SimpleDateFormat("HH:mm",Locale.US).format(new Date(zeroAt))+"에 잼")+"\n"+calibrationNote(status),13,BLUE,true);add(c,modelNote);
+        button(c,"연결 끊기",false,()->{rememberInputs();disconnect("연결을 종료했습니다.");});
+    }
+    /** 연결 전 시작 화면: 팀 로고, 안내 한 줄, 연결 버튼, 사용 방법. 연결되면 측정 화면으로 바뀐다. */
+    void startPage(){
+        body.setGravity(Gravity.CENTER_VERTICAL);LinearLayout c=card(body,"");c.setPadding(dp(22),dp(28),dp(22),dp(24));
+        ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.team_logo);logo.setAdjustViewBounds(true);logo.setContentDescription("푸앙이칼취 팀 로고");LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(dp(170),-2);size.gravity=Gravity.CENTER_HORIZONTAL;size.bottomMargin=dp(16);c.addView(logo,size);
+        TextView title=text("측정기를 연결하세요",22,INK,true);title.setGravity(Gravity.CENTER);add(c,title);gap(c,6);
+        TextView guide=text("USB 케이블로 휴대폰에 꽂고 아래 버튼을 누르세요.",14,MUTED,false);guide.setGravity(Gravity.CENTER);add(c,guide);gap(c,12);
+        connectButton=button(c,"USB 장비 연결",true,()->{rememberInputs();connect();});
+        button(c,"사용 방법",false,()->info("사용 방법",GUIDE));
+        // 연결 중이라는 안내나, 연결이 끊긴 이유처럼 알려 줄 말이 있을 때만 한 줄을 더 보여 준다.
+        String note=busy?taskNote:lastMessage;if(!note.isEmpty()){gap(c,12);nextText=text(note,13,MUTED,false);nextText.setGravity(Gravity.CENTER);add(c,nextText);}
     }
     void recordsPage(){
         LinearLayout c=card(body,"측정 기록");add(c,text("실제 USB 측정 기록 "+records.size()+"건 · 앱 내부에 자동 보관",14,MUTED,false));button(c,"CSV 파일로 내보내기",true,this::export);
@@ -165,6 +178,7 @@ public class MainActivity extends Activity {
         button(c,"게인 변경",false,()->confirm("게인 변경","게인을 바꾸면 영점이 지워집니다. 바꾼 뒤 증류수 영점을 다시 재세요.",()->run("게인 변경 중",()->{instrument.ask("g "+gain.getSelectedItem(),"게인","usage");return instrument.status();},x->{status=(MeasurementCore.Status)x;resetStandards();lastMessage="게인을 바꿨습니다. 증류수 영점을 다시 재세요.";render();}))).setEnabled(!busy&&instrument!=null);
         c=card(body,"니켈체크 "+versionName());ImageView teamLogo=new ImageView(this);teamLogo.setImageResource(R.drawable.team_logo);teamLogo.setAdjustViewBounds(true);teamLogo.setContentDescription("푸앙이칼취 팀 로고");LinearLayout.LayoutParams logoSize=new LinearLayout.LayoutParams(dp(180),-2);logoSize.gravity=Gravity.CENTER_HORIZONTAL;logoSize.bottomMargin=dp(10);c.addView(teamLogo,logoSize);
         add(c,text("중앙대학교 생산품질 1팀 푸앙이칼취\n기록은 이 휴대폰에만 저장됩니다. 앱을 지우기 전에 CSV로 내보내세요.",13,MUTED,false));
+        button(c,"사용 방법",false,()->info("사용 방법",GUIDE));
     }
     void connect(){
         List<UsbSerialDriver> drivers=UsbSerialProber.getDefaultProber().findAllDrivers(usb);
