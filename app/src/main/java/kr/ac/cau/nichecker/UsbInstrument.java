@@ -16,11 +16,11 @@ public final class UsbInstrument implements Closeable {
     /** 명령 하나의 최대 대기 시간. 측정·영점은 약 3초 걸린다. */
     private static final long COMMAND_TIMEOUT_MS = 25000;
     private static final String WRONG_FIRMWARE =
-        "다른 펌웨어가 감지되었습니다. 팀 최종 nickel_rig 펌웨어(한국어 텍스트 통신)가 필요합니다. JSON 통신을 쓰는 v04는 연결되지 않습니다.";
+        "측정기에 다른 펌웨어가 들어 있습니다. nickel_rig 펌웨어를 설치해야 연결됩니다.";
 
     /** 다른 펌웨어 안내문에 기기가 실제로 보낸 줄(앞 80자)을 붙인다. 어떤 펌웨어인지 바로 알 수 있다. */
     private static String wrongFirmware(String line) {
-        return WRONG_FIRMWARE + "\n\n기기가 보낸 내용: " + (line.length() > 80 ? line.substring(0, 80) + "…" : line);
+        return WRONG_FIRMWARE + "\n\n측정기가 보낸 내용: " + (line.length() > 80 ? line.substring(0, 80) + "…" : line);
     }
 
     private UsbSerialPort port;
@@ -69,7 +69,7 @@ public final class UsbInstrument implements Closeable {
             }
         }
         if (!pending.isEmpty()) return pending.removeFirst();
-        throw new IOException("장치 응답 시간이 초과되었습니다. USB·센서 연결을 확인하세요.");
+        throw new IOException("측정기가 답하지 않습니다. USB와 센서 연결을 확인하세요.");
     }
 
     /** 기기 버튼으로 잰 결과처럼 이전에 온 줄은 버린다. */
@@ -120,7 +120,7 @@ public final class UsbInstrument implements Closeable {
             try {
                 s = line(deadline);
             } catch (IOException timeout) {
-                throw new IOException("측정기 응답이 없습니다. USB 연결을 확인하세요. 처음 쓰는 기기면 PC 프로그램으로 펌웨어를 먼저 설치하세요.");
+                throw new IOException("측정기가 답하지 않습니다. USB 연결을 확인하세요. 처음 쓰는 측정기라면 PC 프로그램으로 펌웨어를 먼저 설치하세요.");
             }
             if (s.startsWith("{")) throw new Fatal(wrongFirmware(s));
             if (s.startsWith("SENSOR ERROR")) throw new Fatal("센서 응답이 없습니다. 센서 선(SDA 21 / SCL 22)을 확인하세요.");

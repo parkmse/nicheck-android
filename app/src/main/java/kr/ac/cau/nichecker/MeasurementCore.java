@@ -102,8 +102,8 @@ public final class MeasurementCore {
         public double[] signal, absorbance;
         /** reported = 기기가 보낸 농도. accepted = 검사를 모두 통과해 화면에 보여 주는 농도(아니면 null). */
         public Double reported, accepted;
-        /** 펌웨어가 520 신호도 줄었다고 알린 경우. 용기 오염·기포·탁도 의심. */
-        public boolean turbidity;
+        /** 520 흡광도가 ±A520_LIMIT을 넘은 경우. 농도는 보여 주되 판정을 "확인 필요"로 바꾼다. */
+        public boolean check520;
         public String code = "NO_RESPONSE", message = "측정 응답이 없습니다.";
         public final List<String> raw = new ArrayList<>();
     }
@@ -131,31 +131,72 @@ public final class MeasurementCore {
             if (p.find()) {
                 r.reported = Double.parseDouble(p.group(1));
                 r.absorbance = new double[]{Double.parseDouble(p.group(2)), Double.parseDouble(p.group(3)), Double.parseDouble(p.group(4))};
-                r.turbidity = l.contains("탁도");
+                r.check520 = Math.abs(r.absorbance[1]) > A520_LIMIT;
             }
         }
         if (r.signal == null) return r;
-        if (saturated) return hold(r, "SATURATED", "센서가 포화되었습니다. 관리자에게 광량·게인 점검을 요청하세요.");
-        if (!positive(r.signal)) return hold(r, "INVALID_SIGNAL", "빛 신호가 부족합니다. LED·용기·센서의 위치와 차광을 확인하세요.");
-        if (!before.sensor || !after.sensor || error) return hold(r, "DEVICE_ERROR", "센서 상태 또는 영점을 확인한 뒤 다시 측정하세요.");
+        if (saturated) return hold(r, "SATURATED", "빛이 너무 강합니다. 관리 화면에서 게인을 낮추세요.");
+        if (!positive(r.signal)) return hold(r, "INVALID_SIGNAL", "빛이 너무 약합니다. 큐벳 위치와 뚜껑을 확인하세요.");
+        if (!before.sensor || !after.sensor || error) return hold(r, "DEVICE_ERROR", "측정기가 측정에 실패했습니다. 센서와 영점을 확인하고 다시 재세요.");
         if (!before.fingerprint().equals(after.fingerprint()) || Double.compare(before.m, after.m) != 0
                 || Double.compare(before.c, after.c) != 0 || before.saved != after.saved)
-            return hold(r, "SETTINGS_CHANGED", "측정 중 설정이 바뀌었습니다. 상태를 확인한 뒤 다시 측정하세요.");
-        if (!before.zero) return hold(r, "NO_ZERO", "증류수를 넣고 영점을 먼저 측정하세요.");
-        if (!before.calcKnown()) return hold(r, "UNKNOWN_CALC", "펌웨어의 농도 계산 방식을 확인하지 못했습니다. 펌웨어 버전을 확인하세요.");
-        if (!before.modelReady()) return hold(r, "NO_MODEL", "검량식이 없습니다. 기준 농도가 확인된 표준액으로 검량하세요.");
+            return hold(r, "SETTINGS_CHANGED", "측정하는 동안 설정이 바뀌었습니다. 다시 측정하세요.");
+        if (!before.zero) return hold(r, "NO_ZERO", "영점이 없습니다. 증류수를 넣고 영점을 먼저 재세요.");
+        if (!before.calcKnown()) return hold(r, "UNKNOWN_CALC", "펌웨어가 농도를 어떻게 계산하는지 읽지 못했습니다. 펌웨어 버전을 확인하세요.");
+        if (!before.modelReady()) return hold(r, "NO_MODEL", "검량식이 없습니다. 농도를 아는 표준액으로 검량하세요.");
         if (r.reported == null || !Double.isFinite(r.reported) || r.absorbance == null || !finite(r.absorbance))
-            return hold(r, "INVALID_RESULT", "농도 응답이 유효하지 않습니다. 원시값만 보관합니다.");
+            return hold(r, "INVALID_RESULT", "농도를 읽지 못했습니다. 신호값만 저장했습니다.");
         double expected = (before.response(r.absorbance) - before.c) / before.m;
         // 펌웨어는 흡광도와 농도를 반올림해서 보낸다(옛 버전은 소수 3자리·2자리). 그 반올림만큼은 허용한다.
         double tol = .03 + (.0011 + Math.abs(r.reported) * .000005) / Math.abs(before.m);
         if (Math.abs(expected - r.reported) > tol)
-            return hold(r, "MODEL_MISMATCH", "기기 계산값과 검량식이 일치하지 않습니다. 교정 상태를 확인하세요.");
+            return hold(r, "MODEL_MISMATCH", "측정기가 보낸 농도와 검량식이 맞지 않습니다. 장비 상태를 새로고침하고 다시 재세요.");
         r.accepted = r.reported;
         r.code = "DEVICE_RESULT";
-        r.message = "기기 저장식으로 계산한 값입니다. 정확도·현장 적용 검증은 별도입니다.";
-        if (r.turbidity) r.message += "\n520 신호도 줄었습니다. 용기 오염·기포·탁도를 확인하세요.";
+        r.message = "측정했습니다.";
+        // 니켈은 520에서 거의 흡수하지 않는다. 양수면 탁도·기포, 음수면 영점이나 520 채널 문제다.
+        if (r.check520) r.message += (r.absorbance[1] > 0
+            ? "\n520 흡광도가 높습니다. 큐벳 오염이나 기포, 탁도를 확인하세요."
+            : "\n520 흡광도가 음수입니다. 증류수 영점을 다시 재세요.")
+            + " 다시 채워서 재 보고, 그래도 같으면 적정으로 확인하세요.";
         return r;
+    }
+
+    /** 520 흡광도가 이 값을 넘으면(양수·음수 모두) 판정을 "확인 필요"로 바꾼다. 팀 수정안(2026-11-12)의 임시 문턱값. */
+    public static final double A520_LIMIT = 0.05;
+    /** 검량에 쓴 표준액 농도 범위를 이만큼 넘게 벗어나면 "검량 범위 밖"으로 보류한다. */
+    public static final double RANGE_MARGIN = 0.2;
+    /** 같은 시료를 다시 채워 잰 값들의 차이가 이 값을 넘으면 한 번 더 채워 재게 한다. */
+    public static final double FILL_DIFF_LIMIT = 0.1;
+
+    /** 눈금 막대에서 농도가 놓일 자리(0~1). 막대는 기준 농도의 60%에서 120%까지를 그린다. 밖이면 끝에 붙인다. */
+    public static double gaugePosition(double value, double target) {
+        if (!Double.isFinite(value) || !Double.isFinite(target) || target <= 0) return 0;
+        return Math.max(0, Math.min(1, (value - 0.6 * target) / (0.6 * target)));
+    }
+
+    /** 영점을 잰 뒤 이 시간(분)이 지나면 다시 재라고 안내한다. LED 밝기와 온도가 변하기 때문이다. PC 프로그램과 같은 값. */
+    public static final int ZERO_MAX_MIN = 5;
+
+    /** 영점을 잰 뒤 지난 분. 이번 연결에서 재지 않았으면(zeroAt < 0) -1. 두 시각은 같은 시계의 밀리초다. */
+    public static long zeroMinutes(long zeroAt, long now) {
+        return zeroAt < 0 ? -1 : Math.max(0, now - zeroAt) / 60000;
+    }
+
+    /** 측정 전에 영점을 다시 잴지 물을 때 보여 줄 문구. 영점이 5분 안에 잰 것이면 null. */
+    public static String zeroWarning(long zeroAt, long now) {
+        long min = zeroMinutes(zeroAt, now);
+        if (min < 0) return "측정기에 남아 있는 영점은 언제 잰 것인지 알 수 없습니다. 증류수 영점을 다시 재는 것이 좋습니다.";
+        if (min < ZERO_MAX_MIN) return null;
+        return "영점을 잰 지 " + min + "분 지났습니다. LED 밝기가 변했을 수 있으니 증류수 영점을 다시 재는 것이 좋습니다.";
+    }
+
+    /** 같은 시료를 여러 번 채워 잰 농도의 {평균, 최대 − 최소}. 값이 없으면 null. */
+    public static double[] fillSummary(List<Double> fills) {
+        if (fills == null || fills.isEmpty()) return null;
+        double sum = 0;
+        for (double v : fills) sum += v;
+        return new double[]{sum / fills.size(), Collections.max(fills) - Collections.min(fills)};
     }
 
     static Reading hold(Reading r, String code, String msg) {
@@ -173,12 +214,13 @@ public final class MeasurementCore {
     public static Reading applyRange(Reading r, double[] range) {
         if (r.accepted == null) return r;
         if (range == null) {
-            r.message += "\nPC 등 다른 곳에서 저장한 검량식이라 검량 농도 범위는 확인하지 못했습니다.";
+            r.message += "\nPC에서 저장한 검량식이라 검량 범위를 모릅니다.";
             return r;
         }
-        if (r.accepted < range[0] || r.accepted > range[1])
+        if (r.accepted < range[0] - RANGE_MARGIN || r.accepted > range[1] + RANGE_MARGIN)
             return hold(r, "OUTSIDE_CALIBRATION_RANGE", String.format(Locale.US,
-                "검량 농도 범위(%.2f~%.2f g/L)를 벗어났습니다. 기준 분석으로 확인하세요.", range[0], range[1]));
+                "검량 범위 밖입니다. 표준액 범위(%.2f~%.2f g/L)를 %.1f g/L 넘게 벗어났습니다. 적정으로 확인하세요.",
+                range[0], range[1], RANGE_MARGIN));
         return r;
     }
 
@@ -206,7 +248,7 @@ public final class MeasurementCore {
 
     /** A = m × C + c 최소제곱 적합. 농도 3종 이상, 종류마다 3회 이상이 아니면 거부한다. */
     public static Fit fit(List<Point> p) {
-        final String few = "서로 다른 농도 3종 이상을 각각 3회 이상 측정하세요.";
+        final String few = "농도가 다른 표준액 3종 이상을 3번씩 재세요.";
         if (p.size() < 9) throw new IllegalArgumentException(few);
         Map<Double, Integer> counts = new TreeMap<>();
         double sx = 0, sy = 0;
@@ -254,7 +296,14 @@ public final class MeasurementCore {
         return 100 * concentration / target;
     }
 
-    public static final String NORMAL = "정상", LOW = "경고 · 낮음", HIGH = "경고 · 높음";
+    public static final String NORMAL = "정상", LOW = "경고 · 낮음", HIGH = "경고 · 높음", CHECK = "확인 필요";
+
+    /** 520 흡광도가 이상하면 범위와 관계없이 "확인 필요". 아니면 범위 판정. 농도가 없으면 빈 문자열. */
+    public static String verdict(Double concentration, Double low, Double high, double[] absorbance) {
+        if (concentration == null || !Double.isFinite(concentration)) return "";
+        if (absorbance != null && absorbance.length > 1 && Math.abs(absorbance[1]) > A520_LIMIT) return CHECK;
+        return verdict(concentration, low, high);
+    }
 
     /**
      * 농도를 관리자가 설정한 범위와 비교한다. 하한·상한이 모두 없거나 농도가 없으면 빈 문자열(판정 안 함).

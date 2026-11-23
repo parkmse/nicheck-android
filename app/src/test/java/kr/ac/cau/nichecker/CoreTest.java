@@ -69,12 +69,46 @@ public class CoreTest {
 
         // 측정 해석: 받아들이는 경우
         MeasurementCore.Reading r = MeasurementCore.parse(good405(), s, s);
-        check(r.accepted != null && r.accepted == 5.15 && r.code.equals("DEVICE_RESULT") && !r.turbidity, "405 단독 측정값 수용");
+        check(r.accepted != null && r.accepted == 5.15 && r.code.equals("DEVICE_RESULT") && !r.check520, "405 단독 측정값 수용");
         r = MeasurementCore.parse(good660(), old, old);
         check(r.accepted != null && r.accepted == 5.2, "660-520 측정값 수용");
-        List<String> turbid = Arrays.asList(good405().get(0) + "  <- 520도 줄어듦: 가림·탁도 의심", good405().get(1));
-        r = MeasurementCore.parse(turbid, s, s);
-        check(r.accepted != null && r.turbidity && r.message.contains("탁도"), "탁도 의심은 값과 함께 경고");
+
+        // 520 확인: 흡광도가 ±0.05를 넘으면 농도는 두고 "확인 필요". 펌웨어가 붙이는 문구가 아니라 숫자로 판단한다.
+        String line405 = "농도 5.150 g/L (99%, OK)  흡광도 405 0.6517 / 520 ";
+        r = MeasurementCore.parse(Arrays.asList(line405 + "0.0600 / 660 0.2570  <- 520도 줄어듦: 가림·탁도 의심", good405().get(1)), s, s);
+        check(r.accepted != null && r.check520 && r.message.contains("탁도"), "520이 높으면 값과 함께 탁도 안내");
+        check(MeasurementCore.verdict(r.accepted, 4.2, 6.2, r.absorbance).equals(MeasurementCore.CHECK)
+            && MeasurementCore.verdict(r.accepted, null, null, r.absorbance).equals(MeasurementCore.CHECK), "520이 높으면 범위와 관계없이 확인 필요");
+        r = MeasurementCore.parse(Arrays.asList(line405 + "-0.0600 / 660 0.2570", good405().get(1)), s, s);
+        check(r.accepted != null && r.check520 && r.message.contains("영점")
+            && MeasurementCore.verdict(r.accepted, 4.2, null, r.absorbance).equals(MeasurementCore.CHECK), "520이 음수면 영점 안내와 확인 필요");
+        r = MeasurementCore.parse(Arrays.asList(line405 + "0.0500 / 660 0.2570", good405().get(1)), s, s);
+        check(!r.check520 && MeasurementCore.verdict(r.accepted, 4.2, null, r.absorbance).equals(MeasurementCore.NORMAL)
+            && MeasurementCore.verdict(null, 4.2, null, r.absorbance).isEmpty(), "520이 문턱값 이하면 범위 판정 그대로");
+
+        // 새 펌웨어(LED 예열 추가)의 상태 줄도 같은 방식으로 읽힌다.
+        MeasurementCore.Status warm = MeasurementCore.status(Arrays.asList(
+            "작업자: 홍길동", "센서: OK", "LCD: I2C 16x2", "증류수 기준: 405 10535 / 520 1200 / 660 673",
+            "검량선: m = 0.12653, c = 0.00003 (cal로 저장됨)",
+            "설정: 게인 128X, 적분 50 ms, 6회 평균, 계산 파장 405 nm 단독, LED 예열 켜짐"));
+        check(warm.modelReady() && warm.zero && warm.calcId().equals("405") && warm.gain.equals("128")
+            && MeasurementCore.parse(good405(), warm, warm).accepted != null, "LED 예열이 붙은 상태 줄 해석");
+
+        // 채움 비교: 같은 시료를 다시 채워 잰 값들의 평균과 차이
+        double[] fs = MeasurementCore.fillSummary(Arrays.asList(5.10, 5.20));
+        check(Math.abs(fs[0] - 5.15) < 1e-12 && Math.abs(fs[1] - 0.10) < 1e-12 && !(fs[1] > MeasurementCore.FILL_DIFF_LIMIT + 1e-9), "채움 2회 평균과 차이");
+        fs = MeasurementCore.fillSummary(Arrays.asList(5.10, 5.30, 5.20));
+        check(Math.abs(fs[0] - 5.20) < 1e-12 && Math.abs(fs[1] - 0.20) < 1e-12 && fs[1] > MeasurementCore.FILL_DIFF_LIMIT, "채움 3회는 전체 평균과 최대 차이");
+        check(MeasurementCore.fillSummary(new ArrayList<Double>()) == null, "채움 값이 없으면 요약 없음");
+
+        // 눈금 막대: 기준 5.2일 때 3.12(왼쪽 끝)~6.24(오른쪽 끝). 기준은 2/3 지점, 밖은 끝에 붙는다.
+        check(Math.abs(MeasurementCore.gaugePosition(5.2, 5.2) - 2.0 / 3) < 1e-12 && Math.abs(MeasurementCore.gaugePosition(4.2, 5.2) - 1.08 / 3.12) < 1e-12, "눈금 막대에서 기준과 하한의 자리");
+        check(MeasurementCore.gaugePosition(1.0, 5.2) == 0 && MeasurementCore.gaugePosition(18.1, 5.2) == 1
+            && MeasurementCore.gaugePosition(Double.NaN, 5.2) == 0 && MeasurementCore.gaugePosition(5.2, 0) == 0, "눈금 밖과 잘못된 값은 끝에 붙임");
+
+        // 영점 경과: 5분이 지났거나 이번 연결에서 재지 않았으면 측정 전에 다시 잴지 묻는다.
+        check(MeasurementCore.zeroMinutes(-1, 1000) == -1 && MeasurementCore.zeroMinutes(0, 299_999) == 4 && MeasurementCore.zeroMinutes(600_000, 0) == 0, "영점 후 지난 분(재지 않음, 내림, 시계가 뒤로 간 경우)");
+        check(MeasurementCore.zeroWarning(0, 299_999) == null && MeasurementCore.zeroWarning(0, 300_000).contains("5분") && MeasurementCore.zeroWarning(-1, 0).contains("언제 잰 것인지"), "영점 5분 경과와 미측정 안내");
 
         // 측정 해석: 보류하는 경우
         r = MeasurementCore.parse(good660(), s, s);
@@ -138,15 +172,19 @@ public class CoreTest {
 
         // 검량 범위 확인: 5.15 g/L 측정값
         r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), null);
-        check(r.accepted != null && r.accepted == 5.15 && r.code.equals("DEVICE_RESULT") && r.message.contains("범위는 확인하지 못했습니다"),
+        check(r.accepted != null && r.accepted == 5.15 && r.code.equals("DEVICE_RESULT") && r.message.contains("검량 범위를 모릅니다"),
             "PC에서 저장한 검량식은 농도를 표시하고 범위 미확인을 알림");
         r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{3.64, 5.72});
-        check(r.accepted != null && r.accepted == 5.15 && !r.message.contains("확인하지 못했습니다"), "검량 범위 안은 그대로 표시");
+        check(r.accepted != null && r.accepted == 5.15 && !r.message.contains("검량 범위를 모릅니다"), "검량 범위 안은 그대로 표시");
         r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{5.2, 5.72});
-        check(r.accepted == null && r.code.equals("OUTSIDE_CALIBRATION_RANGE") && r.reported == 5.15 && r.message.contains("5.20~5.72"),
-            "검량 범위 밖은 보류");
+        check(r.accepted != null && r.accepted == 5.15, "검량 범위를 0.2 g/L 안쪽으로 벗어난 값은 표시");
+        r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{5.4, 5.72});
+        check(r.accepted == null && r.code.equals("OUTSIDE_CALIBRATION_RANGE") && r.reported == 5.15 && r.message.contains("5.40~5.72"),
+            "검량 범위를 0.2 g/L 넘게 벗어나면 보류");
+        r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), device, device), new double[]{3.0, 4.9});
+        check(r.accepted == null && r.code.equals("OUTSIDE_CALIBRATION_RANGE"), "위쪽으로 0.2 g/L 넘게 벗어나도 보류");
         r = MeasurementCore.applyRange(MeasurementCore.parse(good405(), status405(false), status405(false)), null);
-        check(r.accepted == null && r.code.equals("NO_MODEL") && !r.message.contains("확인하지 못했습니다"), "이미 보류된 측정은 그대로");
+        check(r.accepted == null && r.code.equals("NO_MODEL") && !r.message.contains("검량 범위를 모릅니다"), "이미 보류된 측정은 그대로");
 
         // 기준 대비 %
         check(Math.abs(MeasurementCore.percent(5.2, 5.2) - 100) < 1e-12 && Math.abs(MeasurementCore.percent(5.15, 5.2) - 99.0385) < 1e-4, "기준 대비 % 계산");
